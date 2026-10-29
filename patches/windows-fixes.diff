@@ -1,0 +1,95 @@
+diff --git a/private_gpt/components/engines/chat/async_chat_engine.py b/private_gpt/components/engines/chat/async_chat_engine.py
+index f409d65..53b81d0 100644
+--- a/private_gpt/components/engines/chat/async_chat_engine.py
++++ b/private_gpt/components/engines/chat/async_chat_engine.py
+@@ -1222,11 +1222,11 @@ class AsyncChatEngine:
+                             existing = []
+                         by_id = {}
+                         for tc in existing:
+-                            if tc.tool_id:
+-                                by_id[tc.tool_id] = tc
++                            tc_id = getattr(tc, "tool_id", None) or getattr(tc, "id", None) or f"index-{getattr(tc, 'index', 0)}"
++                            by_id[tc_id] = tc
+                         for tc in value:
+-                            if tc.tool_id:
+-                                by_id[tc.tool_id] = tc
++                            tc_id = getattr(tc, "tool_id", None) or getattr(tc, "id", None) or f"index-{getattr(tc, 'index', 0)}"
++                            by_id[tc_id] = tc                        
+                         assistant_message.additional_kwargs["tool_calls"] = list(
+                             by_id.values()
+                         )
+diff --git a/private_gpt/components/llm/tokenizers/models/model_discovery.py b/private_gpt/components/llm/tokenizers/models/model_discovery.py
+index f9a7ca0..fc11b3c 100644
+--- a/private_gpt/components/llm/tokenizers/models/model_discovery.py
++++ b/private_gpt/components/llm/tokenizers/models/model_discovery.py
+@@ -1,7 +1,31 @@
+ from __future__ import annotations
+ 
+ import asyncio
+-import fcntl
++try:
++    import fcntl
++except ImportError:  # Windows: emulate fcntl.flock with msvcrt
++    import msvcrt
++    import os as _os
++
++    class _FcntlShim:
++        LOCK_EX = 2
++        LOCK_NB = 4
++        LOCK_UN = 8
++
++        @staticmethod
++        def flock(fd, op):
++            _os.lseek(fd, 0, _os.SEEK_SET)
++            if op & _FcntlShim.LOCK_UN:
++                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
++            elif op & _FcntlShim.LOCK_NB:
++                try:
++                    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
++                except OSError as e:
++                    raise BlockingIOError(*e.args) from e
++            else:
++                msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
++
++    fcntl = _FcntlShim()
+ import json
+ import logging
+ import os
+diff --git a/private_gpt/components/vector_store/qdrant_client_builder.py b/private_gpt/components/vector_store/qdrant_client_builder.py
+index d02b189..24a7372 100644
+--- a/private_gpt/components/vector_store/qdrant_client_builder.py
++++ b/private_gpt/components/vector_store/qdrant_client_builder.py
+@@ -77,6 +77,8 @@ class QdrantClientBuilder:
+ 
+             # Local Qdrant uses one lock file for sync and async clients.
+             # Remove it between client construction using the resolved path.
++            if config.get("url"):
++                config.pop("path", None)
+             client = QdrantClient(**config)
+             QdrantClientBuilder.clean_lock(db_dir=db_dir)
+ 
+@@ -100,4 +102,7 @@ class QdrantClientBuilder:
+     def clean_lock(db_dir: str) -> None:
+         lock_file = os.path.join(db_dir, ".lock")
+         if os.path.exists(lock_file):
+-            os.remove(lock_file)
++            try:
++                os.remove(lock_file)
++            except PermissionError:
++                pass  # Windows: lock file is in use; leave it alone
+diff --git a/private_gpt/server/ingest/ingest_router.py b/private_gpt/server/ingest/ingest_router.py
+index 2e8dc12..0ce8f95 100644
+--- a/private_gpt/server/ingest/ingest_router.py
++++ b/private_gpt/server/ingest/ingest_router.py
+@@ -17,9 +17,10 @@ from private_gpt.server.utils.auth import authenticated
+ from private_gpt.server.utils.callback import BaseCallbackInput
+ from private_gpt.server.utils.http_disconnect import cancel_on_http_disconnect
+ 
++from private_gpt.celery.model import Task, TaskStatus
++
+ try:
+     from private_gpt.celery.celery import celery_app
+-    from private_gpt.celery.model import Task, TaskStatus
+ 
+     _CELERY_AVAILABLE = True
+ except ImportError:

@@ -1,0 +1,11 @@
+# Never commit private data, third-party binaries or environments
+.venv/
+__pycache__/
+*.dll
+*.mgc
+*.exe
+*.pdf
+storage/
+local_data/
+.env
+*.log
